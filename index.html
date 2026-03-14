@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Бильярдная развертка: Размер в px</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas { display: block; }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(30, 30, 30, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            width: 320px;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255,255,255,0.1);
+            z-index: 10;
+        }
+        .control-group { margin-bottom: 12px; }
+        label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+            color: #bbb;
+        }
+        .val-container { display: inline-block; text-align: right; min-width: 70px; color: #4CAF50; font-weight: bold; }
+        input[type="range"] { width: 100%; accent-color: #4CAF50; cursor: pointer; }
+        button {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: bold;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+        #startBtn { background-color: #4CAF50; color: white; }
+        #startBtn:hover { background-color: #45a049; }
+        #resetBtn { background-color: #f44336; color: white; display: none; }
+        /* маленькое мини-окно подсказка */
+        .mini-label {
+            position: absolute;
+            right: 20px;
+            bottom: 20px;
+            color: rgba(255,255,255,0.6);
+            font-size: 0.8em;
+            pointer-events: none;
+            z-index: 9;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <div id="slidersGroup">
+            <div class="control-group">
+                <label>Угол вершины: <span class="val-container"><span id="valAngle">90</span>°</span></label>
+                <input type="range" id="apexAngle" min="20" max="160" value="90">
+            </div>
+            <div class="control-group">
+                <label>Размер большого треугольника: <span class="val-container"><span id="valBase">200</span> px</span></label>
+                <input type="range" id="baseSize" min="10" max="200" value="100">
+            </div>
+
+            <div class="control-group">
+                <label>Смещение x₀: <span class="val-container"><span id="valOffsetX">0</span> px</span></label>
+                <input type="range" id="offsetX" min="-100" max="100" value="0">
+            </div>
+            <div class="control-group">
+                <label>Смещение y₀: <span class="val-container"><span id="valOffsetY">0</span> px</span></label>
+                <input type="range" id="offsetY" min="-100" max="100" value="0">
+            </div>
+
+            <div class="control-group">
+                <label>Размер маленького треугольника: <span class="val-container"><span id="valInner">30</span> px</span></label>
+                <input type="range" id="innerSize" min="10" max="200" value="30">
+            </div>
+
+            <div class="control-group">
+                <label>Скорость: <span class="val-container"><span id="valSpeed">5</span></span></label>
+                <input type="range" id="speed" min="0" max="40" step="0.5" value="5">
+            </div>
+            <div class="control-group">
+                <label>Направление: <span class="val-container"><span id="valDir">45</span>°</span></label>
+                <input type="range" id="angleDir" min="0" max="360" value="45">
+            </div>
+            <div class="control-group">
+                <label>Гравитация: <span class="val-container"><span id="valGravity">0.1</span></span></label>
+                <input type="range" id="gravityMag" min="0" max="1.5" step="0.01" value="0.1">
+            </div>
+        </div>
+        <button id="startBtn">ЗАПУСТИТЬ</button>
+        <button id="resetBtn">НАСТРОЙКА</button>
+    </div>
+
+    <canvas id="simCanvas"></canvas>
+
+<script>
+    class Vec2 {
+        constructor(x, y) { this.x = x; this.y = y; }
+        add(v) { return new Vec2(this.x + v.x, this.y + v.y); }
+        sub(v) { return new Vec2(this.x - v.x, this.y - v.y); }
+        mult(n) { return new Vec2(this.x * n, this.y * n); }
+        dot(v) { return this.x * v.x + this.y * v.y; }
+        cross(v) { return this.x * v.y - this.y * v.x; }
+        mag() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+        normalize() { let m = this.mag(); return m === 0 ? new Vec2(0, 0) : new Vec2(this.x / m, this.y / m); }
+        copy() { return new Vec2(this.x, this.y); }
+    }
+
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    let width, height;
+    function resize() { width = canvas.width = window.innerWidth; height = canvas.height = window.innerHeight; }
+    window.addEventListener('resize', resize);
+    resize();
+
+    let isRunning = false;
+    let startedOutside = false;
+
+    // baseTriangle — неизменная геометрия, вычисляемая из входных параметров
+    let baseTriangle = [];
+    // currentTriangle — используется основной симуляцией и может отражаться/меняться
+    let currentTriangle = [];
+    let historyTriangles = [];
+    let path = [];
+
+    // основной объект (центроид маленького треугольника)
+    let pos = new Vec2(0, 0);
+    let vel = new Vec2(0, 0);
+    let gravity = new Vec2(0, 0);
+    let camPos = new Vec2(0, 0);
+
+    // мини-симуляция (в правом нижнем углу)
+    let miniTriangle = []; // scaled + translated baseTriangle for drawing/physics
+    let posMini = new Vec2(0, 0);
+    let velMini = new Vec2(0, 0);
+    let gravityMini = new Vec2(0, 0);
+    let miniScale = 1;
+    let miniCenter = new Vec2(0, 0);
+
+    const getVal = id => parseFloat(document.getElementById(id).value);
+
+    function getNormal(A, B) {
+        let D = B.sub(A);
+        return new Vec2(-D.y, D.x).normalize();
+    }
+    function reflectPoint(P, A, B) {
+        let N = getNormal(A, B);
+        let d = P.sub(A).dot(N);
+        return P.sub(N.mult(2 * d));
+    }
+    function reflectVector(V, A, B) {
+        let N = getNormal(A, B);
+        let d = V.dot(N);
+        return V.sub(N.mult(2 * d));
+    }
+
+    function checkBoundaryCross(P, T) {
+        // возвращает индекс ребра, если точка P вне (или на границе), иначе -1
+        if (T.length < 3) return -1;
+        let cross1 = T[1].sub(T[0]).cross(P.sub(T[0]));
+        let cross2 = T[2].sub(T[1]).cross(P.sub(T[1]));
+        let cross3 = T[0].sub(T[2]).cross(P.sub(T[2]));
+        if (cross1 <= 0) return 0;
+        if (cross2 <= 0) return 1;
+        if (cross3 <= 0) return 2;
+        return -1;
+    }
+
+    function computeBaseTriangle() {
+        const angleDeg = getVal('apexAngle');
+        const outerBase = getVal('baseSize');
+        const angleRad = angleDeg * Math.PI / 180;
+        const h = (outerBase / 2) / Math.tan(angleRad / 2);
+
+        // стандартное положение: треугольник ориентирован вверх, центр в (0,0)
+        let A = new Vec2(0, -2 * h / 3);
+        let C = new Vec2(outerBase / 2, h / 3);
+        let B = new Vec2(-outerBase / 2, h / 3);
+        baseTriangle = [A, C, B];
+    }
+
+    function computeMiniTransform() {
+        // мини-окно размеры и масштабирование базового треугольника туда
+        const margin = 16;
+        const maxBox = Math.min(260, Math.min(width, height) * 0.28);
+        const boxSize = maxBox;
+        // вычислим extents базового треугольника
+        let xs = baseTriangle.map(p => p.x);
+        let ys = baseTriangle.map(p => p.y);
+        let triW = Math.max(...xs) - Math.min(...xs);
+        let triH = Math.max(...ys) - Math.min(...ys);
+        let triMax = Math.max(triW, triH);
+        miniScale = (boxSize * 0.78) / triMax;
+        // центр мини-окна (координаты центра в canvas)
+        miniCenter = new Vec2(width - margin - boxSize / 2, height - margin - boxSize / 2);
+
+        // подготовим miniTriangle (scaled + centered)
+        miniTriangle = baseTriangle.map(p => p.mult(miniScale).add(miniCenter));
+    }
+
+    function updateLivePreview() {
+        const angleDeg = getVal('apexAngle');
+        const outerBase = getVal('baseSize');
+        const innerBasePx = getVal('innerSize');
+        const speed = getVal('speed');
+        const dirDeg = getVal('angleDir');
+
+        document.getElementById('valAngle').innerText = angleDeg;
+        document.getElementById('valBase').innerText = outerBase;
+        document.getElementById('valInner').innerText = innerBasePx;
+        document.getElementById('valGravity').innerText = getVal('gravityMag');
+        document.getElementById('valSpeed').innerText = speed;
+        document.getElementById('valDir').innerText = dirDeg;
+        document.getElementById('valOffsetX').innerText = getVal('offsetX');
+        document.getElementById('valOffsetY').innerText = getVal('offsetY');
+
+        // Базовая геометрия (неизменяемая, берём из входных параметров)
+        computeBaseTriangle();
+
+        // если симуляция не идёт — сбрасываем всё и ставим начальные значения
+        if (!isRunning) {
+            path = [];
+            historyTriangles = [];
+
+            currentTriangle = baseTriangle.map(p => p.copy()); // начальная копия для основной симуляции
+
+            pos = new Vec2(getVal('offsetX'), getVal('offsetY'));
+            const dirRad = dirDeg * Math.PI / 180;
+            vel = new Vec2(speed * Math.cos(dirRad), speed * -Math.sin(dirRad));
+            camPos = new Vec2(0, 0);
+        }
+
+        // мини-преобразование (в правый нижний угол)
+        computeMiniTransform();
+
+        // инициализация mini pos/vel (в мини-координатах)
+        // перенесём позицию и скорость в систему мини (скалируем и сдвинем)
+        posMini = pos.copy().mult(miniScale).add(miniCenter);
+        velMini = vel.copy().mult(miniScale);
+        gravityMini = new Vec2(0, getVal('gravityMag')).mult(miniScale);
+
+        // убедимся, что стартовый posMini внутри miniTriangle — иначе поместим в центр
+        if (checkBoundaryCross(posMini, miniTriangle) !== -1) {
+            // поместим в центр внешнего треугольника (безопасный старт)
+            let centroid = miniTriangle[0].add(miniTriangle[1]).add(miniTriangle[2]).mult(1/3);
+            posMini = centroid.copy();
+            velMini = new Vec2(0, 0);
+        }
+    }
+
+    document.querySelectorAll('input[type="range"]').forEach(el => { el.addEventListener('input', updateLivePreview); });
+
+    function startSimulation() {
+        if (checkBoundaryCross(pos, currentTriangle) !== -1) startedOutside = true;
+        else startedOutside = false;
+
+        isRunning = true;
+        document.getElementById('slidersGroup').style.display = 'none';
+        document.getElementById('startBtn').style.display = 'none';
+        document.getElementById('resetBtn').style.display = 'block';
+
+        gravity = new Vec2(0, getVal('gravityMag'));
+        historyTriangles = [currentTriangle.map(p => p.copy())];
+        path = [pos.copy()];
+        camPos = pos.copy();
+
+        // мини-симуляция: уже подготовлена в updateLivePreview, но если вдруг — убедимся
+        computeMiniTransform();
+    }
+
+    function resetSimulation() {
+        isRunning = false;
+        document.getElementById('slidersGroup').style.display = 'block';
+        document.getElementById('startBtn').style.display = 'block';
+        document.getElementById('resetBtn').style.display = 'none';
+        updateLivePreview();
+    }
+
+    document.getElementById('startBtn').addEventListener('click', startSimulation);
+    document.getElementById('resetBtn').addEventListener('click', resetSimulation);
+
+    function updatePhysics() {
+        // --- основная физика (как было) ---
+        vel = vel.add(gravity);
+        pos = pos.add(vel);
+
+        if (path.length > 3000) path.shift();
+        path.push(pos.copy());
+
+        if (!startedOutside) {
+            let iterations = 0;
+            while (iterations < 6) {
+                let edgeIndex = checkBoundaryCross(pos, currentTriangle);
+                if (edgeIndex === -1) break;
+
+                let A = currentTriangle[edgeIndex];
+                let B = currentTriangle[(edgeIndex + 1) % 3];
+                let C = currentTriangle[(edgeIndex + 2) % 3];
+
+                let newA = B;
+                let newB = A;
+                let newC = reflectPoint(C, A, B);
+
+                currentTriangle = [newA.copy(), newB.copy(), newC.copy()];
+                historyTriangles.push(currentTriangle.map(p => p.copy()));
+                gravity = reflectVector(gravity, A, B);
+                iterations++;
+            }
+        }
+        camPos = camPos.add(pos.sub(camPos).mult(0.1));
+
+        // --- мини-физика: маленький треугольник внутри miniTriangle ---
+        // обновим мини-скорость/позицию
+        velMini = velMini.add(gravityMini);
+        posMini = posMini.add(velMini);
+
+        // проверяем каждую вершину маленького треугольника — если какая-то вышла за границу, отражаем
+        const innerScale = getVal('innerSize') / getVal('baseSize'); // отношение размеров — используется для расчёта вершин
+        // оригинальный centroid базового треугольника (в оригинальных координатах)
+        let centroidOrig = baseTriangle[0].add(baseTriangle[1]).add(baseTriangle[2]).mult(1/3);
+        // в мини-координатах offsets для вершин маленького треугольника
+        let innerOffsetsMini = baseTriangle.map(p => p.sub(centroidOrig).mult(innerScale * miniScale));
+
+        // итерационно корректируем, если какие-то вершины вне
+        let iter = 0;
+        while (iter < 6) {
+            let outsideFound = false;
+            for (let i = 0; i < 3; i++) {
+                let vertex = posMini.add(innerOffsetsMini[i]);
+                let edgeIndex = checkBoundaryCross(vertex, miniTriangle);
+                if (edgeIndex !== -1) {
+                    outsideFound = true;
+                    // ребро (A->B)
+                    let A = miniTriangle[edgeIndex];
+                    let B = miniTriangle[(edgeIndex + 1) % 3];
+                    // отражаем скорость относительно ребра
+                    velMini = reflectVector(velMini, A, B);
+                    // отражаем вершину и смещаем центроид (posMini) на тот же вектор, чтобы вершина оказалась внутри
+                    let reflectedVertex = reflectPoint(vertex, A, B);
+                    let correction = reflectedVertex.sub(vertex);
+                    posMini = posMini.add(correction);
+                    // небольшая коррекция чтобы не застрять на грани
+                    posMini = posMini.add(getNormal(A,B).mult(0.01));
+                }
+            }
+            if (!outsideFound) break;
+            iter++;
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, width, height);
+
+        // --- основной мир (с центральной камерой) ---
+        ctx.save();
+        ctx.translate(width / 2 - camPos.x, height / 2 - camPos.y);
+
+        // Предшественники
+        ctx.strokeStyle = "rgba(76, 175, 80, 0.15)";
+        ctx.lineWidth = 1;
+        historyTriangles.forEach(t => {
+            ctx.beginPath();
+            ctx.moveTo(t[0].x, t[0].y);
+            ctx.lineTo(t[1].x, t[1].y);
+            ctx.lineTo(t[2].x, t[2].y);
+            ctx.closePath();
+            ctx.stroke();
+        });
+
+        // Траектория
+        if (path.length > 1) {
+            ctx.strokeStyle = "#ff4081";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(path[0].x, path[0].y);
+            for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y);
+            ctx.stroke();
+        }
+
+        // Текущий большой треугольник
+        ctx.strokeStyle = "#4CAF50";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(currentTriangle[0].x, currentTriangle[0].y);
+        ctx.lineTo(currentTriangle[1].x, currentTriangle[1].y);
+        ctx.lineTo(currentTriangle[2].x, currentTriangle[2].y);
+        ctx.closePath();
+        ctx.stroke();
+
+        // Внутренний объект (в основном окне)
+        const outerBase = getVal('baseSize');
+        const innerBasePx = getVal('innerSize');
+        const innerScale = innerBasePx / outerBase;
+
+        let t = currentTriangle;
+        let centroid = t[0].add(t[1]).add(t[2]).mult(1 / 3);
+
+        ctx.fillStyle = "#ffeb3b";
+        ctx.beginPath();
+        for (let i = 0; i < 3; i++) {
+            let offset = t[i].sub(centroid).mult(innerScale);
+            let pt = pos.add(offset);
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // Стрелка вектора скорости (в режиме настройки)
+        if (!isRunning) {
+            ctx.strokeStyle = "#f44336";
+            ctx.fillStyle = "#f44336";
+            ctx.lineWidth = 2;
+            const arrowScale = 10;
+            const arrowEnd = pos.add(vel.mult(arrowScale));
+            const angle = Math.atan2(arrowEnd.y - pos.y, arrowEnd.x - pos.x);
+
+            ctx.beginPath();
+            ctx.moveTo(pos.x, pos.y);
+            ctx.lineTo(arrowEnd.x, arrowEnd.y);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(arrowEnd.x, arrowEnd.y);
+            ctx.lineTo(arrowEnd.x - 10 * Math.cos(angle - Math.PI / 6), arrowEnd.y - 10 * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(arrowEnd.x - 10 * Math.cos(angle + Math.PI / 6), arrowEnd.y - 10 * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        ctx.restore();
+
+        // --- мини-окно (правый нижний угол) ---
+        // фон мини-окна
+        const margin = 16;
+        const boxSize = Math.min(260, Math.min(width, height) * 0.28);
+        const boxX = width - margin - boxSize;
+        const boxY = height - margin - boxSize;
+
+        // рисуем полупрозрачный фон и рамку
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "rgba(20,20,20,0.7)";
+        ctx.fillRect(boxX, boxY, boxSize, boxSize);
+        ctx.strokeStyle = "rgba(255,255,255,0.06)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(boxX, boxY, boxSize, boxSize);
+        ctx.globalAlpha = 1;
+
+        // отрисовка внешнего треугольника (miniTriangle)
+        ctx.strokeStyle = "#4CAF50";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(miniTriangle[0].x, miniTriangle[0].y);
+        ctx.lineTo(miniTriangle[1].x, miniTriangle[1].y);
+        ctx.lineTo(miniTriangle[2].x, miniTriangle[2].y);
+        ctx.closePath();
+        ctx.stroke();
+
+        // отрисовка маленького треугольника (из мини-симуляции)
+        // вычислим вершины маленького треугольника в мини-координатах
+        const innerScaleMain = getVal('innerSize') / getVal('baseSize');
+        let centroidOrig = baseTriangle[0].add(baseTriangle[1]).add(baseTriangle[2]).mult(1 / 3);
+        let innerOffsetsMini = baseTriangle.map(p => p.sub(centroidOrig).mult(innerScaleMain * miniScale));
+        ctx.fillStyle = "#ffeb3b";
+        ctx.beginPath();
+        for (let i = 0; i < 3; i++) {
+            let v = posMini.add(innerOffsetsMini[i]);
+            if (i === 0) ctx.moveTo(v.x, v.y);
+            else ctx.lineTo(v.x, v.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+
+    }
+
+    function loop() {
+        if (isRunning) updatePhysics();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    // инициализация
+    updateLivePreview();
+    loop();
+</script>
+</body>
+</html>
